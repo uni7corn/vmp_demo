@@ -1,30 +1,23 @@
 // ==UserScript==
-// @name         控制台日志导出
+// @name         日志导出log
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  使用window.logHook进行插桩，点击导出日志即可导出.log格式文件
+// @version      1.4
+// @description  油猴日志导出工具，不输出控制台，直接导出
 // @author       buluo
 // @match        *://*/*
 // @grant        unsafeWindow
-// @grant        GM_addStyle
 // @run-at       document-start
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    const CONFIG = {
-        maxLogs: 5000,
-        buttonText: '导出日志',
-        clearText: '清空',
-    };
 
     let logStorage = [];
+    let isUpdatingUI = false;
 
-    // window.logHook 全局挂载
     const targetWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
-    // 辅助函数：安全序列化
     function safeStringify(obj) {
         const cache = new Set();
         try {
@@ -36,61 +29,98 @@
                 return value;
             });
         } catch (e) {
-            return String(obj);
+            return "[Object Serialization Failed]";
         }
     }
 
-    // 在日志断点中使用 window.logHook(变量)
+    // 插桩函数：只存入数组
     targetWindow.logHook = function(...args) {
-        // 1. 依然打印到控制台，方便调试
-        console.log(...args);
-
-        // 2. 存入我们的缓存
         try {
-            const timestamp = new Date().toLocaleTimeString();
+            const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false, fractionalSecondDigits: 3 });
             const message = args.map(arg => {
-                if (typeof arg === 'object') return safeStringify(arg);
+                if (typeof arg === 'object' && arg !== null) return safeStringify(arg);
                 return String(arg);
             }).join(' ');
 
             logStorage.push(`[${timestamp}] ${message}`);
 
-            if (logStorage.length > CONFIG.maxLogs) logStorage.shift();
-            updateCount();
-
+            // 仅在有 UI 时触发异步更新
+            if (!isUpdatingUI) {
+                isUpdatingUI = true;
+                requestAnimationFrame(updateUICount);
+            }
         } catch (err) {
-            console.error('[LogHook Error]', err);
+            // 静默处理异常
         }
-
-        // 返回 false 或 undefined 以防影响断点逻辑（虽然日志断点通常不关心返回值）
         return '';
     };
 
-    // 再次 Hook 原生 console.log
-    const originalLog = console.log;
-    console.log = function(...args) {
-        originalLog.apply(console, args);
-    };
+    function updateUICount() {
+        const span = document.getElementById('log-hook-count');
+        if (span) span.innerText = `Logs: ${logStorage.length}`;
+        isUpdatingUI = false;
+    }
+    function exportLogs() {
+        if (logStorage.length === 0) {
+            alert('当前暂无日志');
+            return;
+        }
 
+        // 使用 Blob 构造函数直接传入数组
+        // 每行末尾加换行符
+        const blobData = logStorage.flatMap(line => [line, '\n']);
+        const blob = new Blob(blobData, { type: 'text/plain;charset=utf-8' });
 
-    //UI
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const timeStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+        a.href = url;
+        a.download = `full_debug_log_${timeStr}.log`;
+        document.body.appendChild(a);
+        a.click();
+
+        // 释放内存映射
+        setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 1000);
+    }
+
     function createUI() {
+        if (document.getElementById('log-hook-ui')) return;
+
         const container = document.createElement('div');
-        container.style.cssText = `position: fixed; bottom: 20px; right: 20px; z-index: 999999; background: rgba(0,0,0,0.8); padding: 10px; border-radius: 8px; color: white; font-family: sans-serif; display: flex; gap: 10px; align-items: center; font-size: 12px;`;
+        container.id = 'log-hook-ui';
+        container.style.cssText = `
+            position: fixed; bottom: 10px; right: 10px; z-index: 2147483647;
+            background: #222; border: 1px solid #444; padding: 6px 12px;
+            border-radius: 4px; color: #eee; font-family: Consolas, monospace;
+            display: flex; gap: 10px; align-items: center; font-size: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        `;
 
         const countSpan = document.createElement('span');
         countSpan.id = 'log-hook-count';
         countSpan.innerText = 'Logs: 0';
+        countSpan.style.color = '#00ff00';
+
+        const btnStyle = "cursor:pointer; border:none; color:white; padding:4px 8px; border-radius:3px; font-weight:bold;";
 
         const exportBtn = document.createElement('button');
-        exportBtn.innerText = CONFIG.buttonText;
-        exportBtn.style.cssText = `cursor: pointer; background: #2196F3; border: none; color: white; padding: 5px 10px; border-radius: 4px;`;
+        exportBtn.innerText = '导出全量日志';
+        exportBtn.style.cssText = btnStyle + "background: #007bff;";
         exportBtn.onclick = exportLogs;
 
         const clearBtn = document.createElement('button');
-        clearBtn.innerText = CONFIG.clearText;
-        clearBtn.style.cssText = `cursor: pointer; background: #f44336; border: none; color: white; padding: 5px 10px; border-radius: 4px;`;
-        clearBtn.onclick = clearLogs;
+        clearBtn.innerText = '清空';
+        clearBtn.style.cssText = btnStyle + "background: #dc3545;";
+        clearBtn.onclick = () => {
+            if(confirm('确定要清空已记录的 ' + logStorage.length + ' 条日志吗？')) {
+                logStorage = [];
+                updateUICount();
+            }
+        };
 
         container.appendChild(countSpan);
         container.appendChild(exportBtn);
@@ -98,31 +128,9 @@
         document.body.appendChild(container);
     }
 
-    function updateCount() {
-        const span = document.getElementById('log-hook-count');
-        if (span) span.innerText = `Logs: ${logStorage.length}`;
-    }
-
-    function clearLogs() {
-        logStorage = [];
-        updateCount();
-    }
-
-    function exportLogs() {
-        if (!logStorage.length) return alert('无日志');
-        const blob = new Blob([logStorage.join('\n')], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `debug_log_${Date.now()}.log`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', createUI);
-    } else {
+    if (document.readyState === 'complete') {
         createUI();
+    } else {
+        window.addEventListener('load', createUI);
     }
 })();
